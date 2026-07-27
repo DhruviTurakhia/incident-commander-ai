@@ -1,0 +1,78 @@
+{
+  "id": "memory-leak",
+  "title": "Recommendation pods restarting from a memory leak",
+  "description": "An in-memory personalization cache grew without bounds until pods were OOM-killed.",
+  "fault_type": "Memory leak",
+  "services": ["recommendation-api", "feature-store", "storefront"],
+  "alert": {"service": "recommendation-api", "severity": "SEV-2", "detected_at": "2026-07-25T12:26:00Z"},
+  "tool_outputs": {
+    "deployment.latest": {
+      "data": {"version": "3.11.0", "previous_version": "3.10.4", "deployed_at": "2026-07-25T08:00:00Z"},
+      "evidence": [{"id": "ml-deploy", "source": "Argo CD", "signal_type": "deployment", "service": "recommendation-api", "observed_at": "2026-07-25T08:00:00Z", "summary": "Version 3.11.0 enabled an in-process personalization cache", "value": "3.11.0", "anomaly_score": 0.78}]
+    },
+    "metrics.query": {
+      "data": {"memory_growth_mb_per_hour": 410, "heap_mb": 1940, "limit_mb": 2048, "error_rate": 0.12},
+      "evidence": [
+        {"id": "ml-memory", "source": "Prometheus", "signal_type": "metric", "service": "recommendation-api", "observed_at": "2026-07-25T12:19:00Z", "summary": "Heap grew monotonically at 410 MB per hour", "value": "1940/2048 MB", "anomaly_score": 0.99},
+        {"id": "ml-errors", "source": "Prometheus", "signal_type": "metric", "service": "storefront", "observed_at": "2026-07-25T12:23:00Z", "summary": "Recommendation fallback rate reached 12%", "value": "12%", "anomaly_score": 0.91}
+      ]
+    },
+    "logs.search": {
+      "data": {"matches": 38, "top_error": "Container terminated with exit code 137"},
+      "evidence": [{"id": "ml-log", "source": "Loki", "signal_type": "log", "service": "recommendation-api", "observed_at": "2026-07-25T12:21:13Z", "summary": "Pods exited with code 137 immediately after heap approached the limit", "value": "exit code 137", "anomaly_score": 0.96}]
+    },
+    "traces.search": {
+      "data": {"failed_traces": 612, "fallback_span": "recommendations.fallback"},
+      "evidence": [{"id": "ml-trace", "source": "OpenTelemetry", "signal_type": "trace", "service": "storefront", "observed_at": "2026-07-25T12:23:12Z", "summary": "Requests fell back when recommendation pods restarted", "value": "612 traces", "anomaly_score": 0.89}]
+    },
+    "kubernetes.snapshot": {
+      "data": {"ready_pods": "3/10", "restarts": 38, "reason": "OOMKilled"},
+      "evidence": [{"id": "ml-k8s", "source": "Kubernetes", "signal_type": "state", "service": "recommendation-api", "observed_at": "2026-07-25T12:22:00Z", "summary": "Seven pods were unavailable after repeated OOM kills", "value": "3/10 ready; 38 restarts", "anomaly_score": 0.99}]
+    },
+    "github.recent_commits": {
+      "data": {"commit": "a9e443c", "pull_request": 611, "files_changed": ["src/cache/personalization.py"]},
+      "evidence": [{"id": "ml-commit", "source": "GitHub", "signal_type": "commit", "service": "recommendation-api", "observed_at": "2026-07-25T07:31:00Z", "summary": "The new dictionary cache had no size limit or eviction policy", "value": "cache[user_id] = features", "anomaly_score": 0.95, "url": "https://github.com/example/recommendations/pull/611"}]
+    },
+    "jira.open_tickets": {"data": {"related": ["REC-619"], "note": "Cache load test deferred"}, "evidence": []},
+    "runbooks.search": {"data": {"runbook": "pod-oom-loop", "recommended_step": "Roll back the leaking release; do not only raise memory limits"}, "evidence": []}
+  },
+  "analysis": {
+    "timeline": [
+      {"occurred_at": "2026-07-25T08:00:00Z", "title": "In-process cache enabled", "detail": "Version 3.11.0 began caching personalization data per user.", "service": "recommendation-api", "evidence_ids": ["ml-deploy", "ml-commit"], "severity": "info"},
+      {"occurred_at": "2026-07-25T12:19:00Z", "title": "Heap approached pod limit", "detail": "Memory reached 1.94 GB after growing continuously.", "service": "recommendation-api", "evidence_ids": ["ml-memory"], "severity": "critical"},
+      {"occurred_at": "2026-07-25T12:22:00Z", "title": "OOM restart loop began", "detail": "Only three of ten pods remained ready.", "service": "recommendation-api", "evidence_ids": ["ml-k8s", "ml-log", "ml-trace"], "severity": "critical"}
+    ],
+    "root_cause": {
+      "summary": "Version 3.11.0 introduced an unbounded in-memory personalization cache. Heap usage grew by roughly 410 MB per hour until pods crossed their 2 GB limit and were repeatedly OOM-killed.",
+      "confidence": 0.97,
+      "service": "recommendation-api",
+      "causal_chain": ["Unbounded cache enabled", "Unique user entries accumulated", "Heap grew without eviction", "Pods exceeded memory limit", "OOM restarts caused recommendation fallbacks"],
+      "evidence_ids": ["ml-deploy", "ml-commit", "ml-memory", "ml-k8s", "ml-log", "ml-trace"]
+    },
+    "evidence_graph": {
+      "nodes": [
+        {"id": "release", "label": "v3.11.0", "type": "change", "status": "cause"},
+        {"id": "cache", "label": "unbounded cache", "type": "signal", "status": "cause"},
+        {"id": "reco", "label": "recommendation-api", "type": "service", "status": "affected"},
+        {"id": "oom", "label": "OOMKilled", "type": "signal", "status": "critical"},
+        {"id": "store", "label": "storefront", "type": "service", "status": "degraded"}
+      ],
+      "edges": [
+        {"from": "release", "to": "cache", "label": "enabled"},
+        {"from": "cache", "to": "reco", "label": "grew heap"},
+        {"from": "reco", "to": "oom", "label": "crossed limit"},
+        {"from": "oom", "to": "store", "label": "triggered fallback"}
+      ]
+    },
+    "remediation": {
+      "title": "Roll back recommendation-api to 3.10.4",
+      "description": "Remove the unbounded cache, then replace it with a bounded cache that has TTL and eviction metrics.",
+      "command_preview": "kubectl rollout undo deployment/recommendation-api --to-revision=112 -n ml-platform",
+      "risk": "destructive",
+      "requires_approval": true
+    },
+    "compiled_latency_seconds": 0.37,
+    "action_result": {"status": "rolled_back", "from_version": "3.11.0", "to_version": "3.10.4", "verification": "10/10 pods ready; memory stable"}
+  }
+}
+
