@@ -1,0 +1,262 @@
+{
+  "schema_version": "1.0",
+  "id": "sre_incident_investigation",
+  "name": "Evidence-backed incident investigation",
+  "version": 1,
+  "description": "Collect operational context in parallel, correlate a root-cause timeline, publish the report, and require approval before remediation.",
+  "trigger": "alert.received",
+  "labels": {
+    "owner": "sre",
+    "execution": "deterministic",
+    "tenant_scope": "required"
+  },
+  "nodes": [
+    {
+      "id": "collect_context",
+      "name": "Collect operational context",
+      "kind": "parallel",
+      "calls": [
+        {
+          "alias": "deployment",
+          "tool": "deployment.latest",
+          "args": {
+            "scenario_id": "{{ inputs.scenario_id }}",
+            "incident_id": "{{ inputs.incident_id }}",
+            "service": "{{ inputs.service }}"
+          }
+        },
+        {
+          "alias": "metrics",
+          "tool": "metrics.query",
+          "args": {
+            "scenario_id": "{{ inputs.scenario_id }}",
+            "incident_id": "{{ inputs.incident_id }}",
+            "service": "{{ inputs.service }}"
+          }
+        },
+        {
+          "alias": "logs",
+          "tool": "logs.search",
+          "args": {
+            "scenario_id": "{{ inputs.scenario_id }}",
+            "incident_id": "{{ inputs.incident_id }}",
+            "service": "{{ inputs.service }}"
+          }
+        },
+        {
+          "alias": "traces",
+          "tool": "traces.search",
+          "args": {
+            "scenario_id": "{{ inputs.scenario_id }}",
+            "incident_id": "{{ inputs.incident_id }}",
+            "service": "{{ inputs.service }}"
+          }
+        },
+        {
+          "alias": "kubernetes",
+          "tool": "kubernetes.snapshot",
+          "args": {
+            "scenario_id": "{{ inputs.scenario_id }}",
+            "incident_id": "{{ inputs.incident_id }}",
+            "service": "{{ inputs.service }}"
+          }
+        },
+        {
+          "alias": "commits",
+          "tool": "github.recent_commits",
+          "args": {
+            "scenario_id": "{{ inputs.scenario_id }}",
+            "incident_id": "{{ inputs.incident_id }}",
+            "service": "{{ inputs.service }}"
+          }
+        },
+        {
+          "alias": "tickets",
+          "tool": "jira.open_tickets",
+          "args": {
+            "scenario_id": "{{ inputs.scenario_id }}",
+            "incident_id": "{{ inputs.incident_id }}",
+            "service": "{{ inputs.service }}"
+          }
+        },
+        {
+          "alias": "runbook",
+          "tool": "runbooks.search",
+          "args": {
+            "scenario_id": "{{ inputs.scenario_id }}",
+            "incident_id": "{{ inputs.incident_id }}",
+            "service": "{{ inputs.service }}"
+          }
+        }
+      ],
+      "retry": {
+        "attempts": 3,
+        "backoff_seconds": 0.05
+      }
+    },
+    {
+      "id": "load_service_runbooks",
+      "name": "Load service runbooks",
+      "kind": "loop",
+      "depends_on": ["collect_context"],
+      "tool": "runbooks.search",
+      "items": "{{ inputs.related_services }}",
+      "item_name": "service_name",
+      "args": {
+        "scenario_id": "{{ inputs.scenario_id }}",
+        "incident_id": "{{ inputs.incident_id }}",
+        "service": "{{ service_name }}"
+      }
+    },
+    {
+      "id": "correlate_incident",
+      "name": "Build timeline and infer root cause",
+      "kind": "pipe",
+      "depends_on": ["collect_context"],
+      "pipeline": [
+        {
+          "alias": "timeline",
+          "tool": "analysis.build_timeline",
+          "args": {
+            "scenario_id": "{{ inputs.scenario_id }}",
+            "context": "{{ steps.collect_context }}"
+          }
+        },
+        {
+          "alias": "root_cause",
+          "tool": "analysis.infer_root_cause",
+          "args": {
+            "scenario_id": "{{ inputs.scenario_id }}",
+            "timeline": "{{ pipe }}",
+            "context": "{{ steps.collect_context }}"
+          }
+        }
+      ]
+    },
+    {
+      "id": "build_evidence_graph",
+      "name": "Build evidence graph",
+      "kind": "call",
+      "depends_on": ["correlate_incident"],
+      "tool": "analysis.build_evidence_graph",
+      "args": {
+        "scenario_id": "{{ inputs.scenario_id }}",
+        "root_cause": "{{ steps.correlate_incident.final }}",
+        "context": "{{ steps.collect_context }}"
+      }
+    },
+    {
+      "id": "recommend_remediation",
+      "name": "Recommend a runbook-backed remediation",
+      "kind": "call",
+      "depends_on": ["correlate_incident", "load_service_runbooks"],
+      "tool": "analysis.recommend_remediation",
+      "args": {
+        "scenario_id": "{{ inputs.scenario_id }}",
+        "root_cause": "{{ steps.correlate_incident.final }}",
+        "runbooks": "{{ steps.load_service_runbooks }}"
+      }
+    },
+    {
+      "id": "estimate_cost",
+      "name": "Estimate repeated-run savings",
+      "kind": "call",
+      "depends_on": ["collect_context"],
+      "tool": "analysis.estimate_cost",
+      "args": {
+        "scenario_id": "{{ inputs.scenario_id }}",
+        "tool_count": 8
+      }
+    },
+    {
+      "id": "confidence_gate",
+      "name": "Check remediation confidence",
+      "kind": "condition",
+      "depends_on": ["correlate_incident"],
+      "condition": {
+        "left": "{{ steps.correlate_incident.final.confidence }}",
+        "operator": "gte",
+        "right": 0.8
+      }
+    },
+    {
+      "id": "assemble_report",
+      "name": "Assemble the incident report",
+      "kind": "collect",
+      "depends_on": [
+        "build_evidence_graph",
+        "recommend_remediation",
+        "estimate_cost",
+        "confidence_gate"
+      ],
+      "sources": {
+        "timeline": "{{ steps.correlate_incident.stages.timeline }}",
+        "root_cause": "{{ steps.correlate_incident.final }}",
+        "evidence_graph": "{{ steps.build_evidence_graph }}",
+        "remediation": "{{ steps.recommend_remediation }}",
+        "cost_comparison": "{{ steps.estimate_cost }}",
+        "confidence_gate": "{{ steps.confidence_gate }}"
+      }
+    },
+    {
+      "id": "post_investigation",
+      "name": "Post the investigation to Slack",
+      "kind": "call",
+      "depends_on": ["assemble_report"],
+      "tool": "slack.post_report",
+      "args": {
+        "scenario_id": "{{ inputs.scenario_id }}",
+        "incident_id": "{{ inputs.incident_id }}",
+        "channel": "{{ inputs.slack_channel }}",
+        "report": "{{ steps.assemble_report }}"
+      }
+    },
+    {
+      "id": "approve_rollback",
+      "name": "Approve production rollback",
+      "kind": "approval",
+      "depends_on": ["post_investigation"],
+      "when": {
+        "left": "{{ steps.confidence_gate.matched }}",
+        "operator": "eq",
+        "right": true
+      },
+      "approval": {
+        "title": "Approve rollback",
+        "description": "The investigation found a high-confidence cause. Review the evidence before rolling back the affected deployment.",
+        "required_role": "incident_commander",
+        "expires_after_minutes": 30
+      }
+    },
+    {
+      "id": "execute_rollback",
+      "name": "Execute approved rollback",
+      "kind": "call",
+      "depends_on": ["approve_rollback"],
+      "tool": "kubernetes.rollback",
+      "requires_approval": true,
+      "when": {
+        "left": "{{ steps.confidence_gate.matched }}",
+        "operator": "eq",
+        "right": true
+      },
+      "args": {
+        "scenario_id": "{{ inputs.scenario_id }}",
+        "incident_id": "{{ inputs.incident_id }}",
+        "service": "{{ inputs.service }}"
+      }
+    },
+    {
+      "id": "finalize_run",
+      "name": "Finalize audit record",
+      "kind": "collect",
+      "depends_on": ["execute_rollback"],
+      "sources": {
+        "report": "{{ steps.assemble_report }}",
+        "approval": "{{ steps.approve_rollback }}",
+        "action": "{{ steps.execute_rollback }}"
+      }
+    }
+  ]
+}
+
