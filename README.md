@@ -5,6 +5,7 @@
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-62e6b4?style=flat-square)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/API-FastAPI-62e6b4?style=flat-square)](https://fastapi.tiangolo.com/)
 [![MCP](https://img.shields.io/badge/Protocol-MCP-62e6b4?style=flat-square)](https://modelcontextprotocol.io/)
+[![CI](https://github.com/DhruviTurakhia/incident-commander-ai/actions/workflows/ci.yml/badge.svg)](https://github.com/DhruviTurakhia/incident-commander-ai/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-62e6b4?style=flat-square)](LICENSE)
 
 Incident Commander is a portfolio-scale backend system for on-call engineers. It gathers
@@ -209,7 +210,7 @@ ruff check .
 pytest --cov=incident_commander --cov-report=term-missing
 ```
 
-The test suite compiles the DAG, rejects unsafe plans, executes all five fault scenarios,
+The 14-test suite compiles the DAG, rejects unsafe plans, executes all five fault scenarios,
 verifies the approval pause, resumes the destructive action, reloads the completed run from
 SQLite, and exercises the API end to end.
 
