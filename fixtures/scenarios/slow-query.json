@@ -1,0 +1,78 @@
+{
+  "id": "slow-query",
+  "title": "Catalog search slowed by an unindexed query",
+  "description": "A new filter forced sequential scans on the products table and exhausted database CPU.",
+  "fault_type": "Slow database query",
+  "services": ["catalog-api", "catalog-db", "storefront"],
+  "alert": {"service": "catalog-api", "severity": "SEV-2", "detected_at": "2026-07-25T11:17:00Z"},
+  "tool_outputs": {
+    "deployment.latest": {
+      "data": {"version": "5.8.2", "previous_version": "5.8.1", "deployed_at": "2026-07-25T11:05:00Z"},
+      "evidence": [{"id": "sq-deploy", "source": "Argo CD", "signal_type": "deployment", "service": "catalog-api", "observed_at": "2026-07-25T11:05:00Z", "summary": "Catalog 5.8.2 added supplier and region filters", "value": "5.8.2", "anomaly_score": 0.79}]
+    },
+    "metrics.query": {
+      "data": {"p95_latency_ms": 6140, "db_cpu_percent": 97, "rows_scanned_per_request": 2800000},
+      "evidence": [
+        {"id": "sq-cpu", "source": "Prometheus", "signal_type": "metric", "service": "catalog-db", "observed_at": "2026-07-25T11:13:00Z", "summary": "Database CPU remained above 95%", "value": "97%", "anomaly_score": 0.98},
+        {"id": "sq-latency", "source": "Prometheus", "signal_type": "metric", "service": "catalog-api", "observed_at": "2026-07-25T11:14:00Z", "summary": "Search p95 rose from 180 ms to 6.1 seconds", "value": "6140 ms", "anomaly_score": 0.99}
+      ]
+    },
+    "logs.search": {
+      "data": {"top_query": "SELECT ... WHERE supplier_id=? AND region=?", "mean_duration_ms": 5770},
+      "evidence": [{"id": "sq-log", "source": "Loki", "signal_type": "log", "service": "catalog-db", "observed_at": "2026-07-25T11:12:42Z", "summary": "Slow-query log showed repeated sequential scans", "value": "Seq Scan on products", "anomaly_score": 0.95}]
+    },
+    "traces.search": {
+      "data": {"critical_span": "postgres.catalog.search", "span_duration_ms": 5890},
+      "evidence": [{"id": "sq-trace", "source": "OpenTelemetry", "signal_type": "trace", "service": "catalog-api", "observed_at": "2026-07-25T11:14:22Z", "summary": "96% of request time was inside the catalog SQL span", "value": "5890 ms", "anomaly_score": 0.96}]
+    },
+    "kubernetes.snapshot": {
+      "data": {"ready_pods": "8/8", "cpu_percent": 31, "memory_percent": 46},
+      "evidence": [{"id": "sq-k8s", "source": "Kubernetes", "signal_type": "state", "service": "catalog-api", "observed_at": "2026-07-25T11:15:00Z", "summary": "Application pods were healthy with spare CPU", "value": "8/8 ready", "anomaly_score": 0.1}]
+    },
+    "github.recent_commits": {
+      "data": {"commit": "bd7781f", "pull_request": 921, "files_changed": ["queries/product_search.sql"]},
+      "evidence": [{"id": "sq-commit", "source": "GitHub", "signal_type": "commit", "service": "catalog-api", "observed_at": "2026-07-25T10:44:00Z", "summary": "New query filters shipped without the composite index from the migration plan", "value": "missing index (supplier_id, region)", "anomaly_score": 0.94, "url": "https://github.com/example/catalog/pull/921"}]
+    },
+    "jira.open_tickets": {"data": {"related": ["CAT-882"], "note": "Index migration split from feature release"}, "evidence": []},
+    "runbooks.search": {"data": {"runbook": "catalog-query-regression", "recommended_step": "Disable the new filter and apply the reviewed concurrent index"}, "evidence": []}
+  },
+  "analysis": {
+    "timeline": [
+      {"occurred_at": "2026-07-25T11:05:00Z", "title": "Catalog 5.8.2 deployed", "detail": "The release enabled supplier and region filtering.", "service": "catalog-api", "evidence_ids": ["sq-deploy", "sq-commit"], "severity": "info"},
+      {"occurred_at": "2026-07-25T11:12:42Z", "title": "Sequential scans accelerated", "detail": "The new filter scanned 2.8M rows per request.", "service": "catalog-db", "evidence_ids": ["sq-log", "sq-trace"], "severity": "critical"},
+      {"occurred_at": "2026-07-25T11:14:00Z", "title": "Search latency breached SLO", "detail": "Database CPU reached 97% and p95 crossed six seconds.", "service": "catalog-api", "evidence_ids": ["sq-cpu", "sq-latency"], "severity": "critical"}
+    ],
+    "root_cause": {
+      "summary": "Catalog 5.8.2 introduced a supplier-and-region filter without its composite index. PostgreSQL used sequential scans over 2.8M rows, saturating database CPU and increasing search p95 to 6.1 seconds.",
+      "confidence": 0.95,
+      "service": "catalog-api",
+      "causal_chain": ["New search filter deployed", "Required composite index was absent", "Queries performed sequential scans", "Database CPU reached 97%", "Search latency breached the SLO"],
+      "evidence_ids": ["sq-deploy", "sq-commit", "sq-log", "sq-trace", "sq-cpu", "sq-latency"]
+    },
+    "evidence_graph": {
+      "nodes": [
+        {"id": "release", "label": "catalog 5.8.2", "type": "change", "status": "cause"},
+        {"id": "api", "label": "catalog-api", "type": "service", "status": "affected"},
+        {"id": "db", "label": "catalog-db", "type": "service", "status": "saturated"},
+        {"id": "query", "label": "Seq Scan", "type": "signal", "status": "cause"},
+        {"id": "slo", "label": "p95 6.1s", "type": "signal", "status": "critical"}
+      ],
+      "edges": [
+        {"from": "release", "to": "query", "label": "introduced filter"},
+        {"from": "query", "to": "db", "label": "consumed CPU"},
+        {"from": "db", "to": "api", "label": "blocked requests"},
+        {"from": "api", "to": "slo", "label": "breached SLO"}
+      ]
+    },
+    "remediation": {
+      "title": "Disable the new catalog filter",
+      "description": "Roll back 5.8.2, then add the composite index concurrently before re-enabling the feature.",
+      "command_preview": "kubectl rollout undo deployment/catalog-api --to-revision=57 -n commerce",
+      "risk": "destructive",
+      "requires_approval": true
+    },
+    "compiled_latency_seconds": 0.39,
+    "action_result": {"status": "rolled_back", "from_version": "5.8.2", "to_version": "5.8.1", "verification": "database CPU below 45%; search p95 recovering"}
+  }
+}
+
