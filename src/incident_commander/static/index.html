@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Deterministic, evidence-backed SRE incident investigations powered by compiled workflows."
+    />
+    <title>Incident Commander — SRE investigation console</title>
+    <link rel="stylesheet" href="/static/styles.css?v=1" />
+    <script src="/static/app.js?v=1" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to incident console</a>
+    <header class="topbar">
+      <a class="brand" href="/">
+        <span class="brand-mark" aria-hidden="true">IC</span>
+        <span>
+          <strong>Incident Commander</strong>
+          <small>Deterministic AI SRE</small>
+        </span>
+      </a>
+      <div class="topbar-meta">
+        <span class="system-status"><i></i> Workflow engine online</span>
+        <a href="/docs" target="_blank" rel="noreferrer">API docs ↗</a>
+      </div>
+    </header>
+
+    <main id="main" class="shell">
+      <section class="command-panel" aria-labelledby="page-title">
+        <div>
+          <p class="eyebrow">Compiled MCP workflow · v1</p>
+          <h1 id="page-title">Investigate first.<br />Act with evidence.</h1>
+          <p class="lede">
+            Operational context is collected in parallel, correlated into a causal timeline,
+            and paused at a human approval gate before any production change.
+          </p>
+        </div>
+        <form id="incident-form" class="launch-card">
+          <label for="scenario">Inject a production fault</label>
+          <div class="select-wrap">
+            <select id="scenario" name="scenario" aria-describedby="scenario-help"></select>
+          </div>
+          <p id="scenario-help">Five local scenarios. No cloud credentials required.</p>
+          <button id="run-button" class="primary-button" type="submit">
+            <span>Run investigation</span>
+            <span aria-hidden="true">→</span>
+          </button>
+          <div class="launch-foot">
+            <span><i class="dot dot-read"></i> Read-only by default</span>
+            <span><i class="dot dot-gate"></i> Approval-gated rollback</span>
+          </div>
+        </form>
+      </section>
+
+      <section class="status-strip" aria-label="Current incident status">
+        <div>
+          <span>Incident</span>
+          <strong id="incident-id">Not started</strong>
+        </div>
+        <div>
+          <span>Severity</span>
+          <strong id="severity">—</strong>
+        </div>
+        <div>
+          <span>Affected service</span>
+          <strong id="affected-service">—</strong>
+        </div>
+        <div>
+          <span>Root-cause confidence</span>
+          <strong id="confidence">—</strong>
+        </div>
+        <div class="status-state">
+          <span>Workflow state</span>
+          <strong id="run-status" class="pill neutral">Ready</strong>
+        </div>
+      </section>
+
+      <section class="panel workflow-panel" aria-labelledby="workflow-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Reusable execution plan</p>
+            <h2 id="workflow-title">Compiled workflow</h2>
+          </div>
+          <div class="legend">
+            <span><i class="legend-dot success"></i>Complete</span>
+            <span><i class="legend-dot waiting"></i>Waiting</span>
+            <span><i class="legend-dot pending"></i>Pending</span>
+          </div>
+        </div>
+        <div id="workflow" class="workflow" aria-live="polite"></div>
+      </section>
+
+      <div class="dashboard-grid">
+        <section class="panel root-panel" aria-labelledby="root-title">
+          <div class="section-heading compact">
+            <div>
+              <p class="eyebrow">Evidence-backed conclusion</p>
+              <h2 id="root-title">Likely root cause</h2>
+            </div>
+            <span id="root-confidence" class="score">—</span>
+          </div>
+          <p id="root-summary" class="empty-copy">
+            Run a scenario to correlate deployments, metrics, logs, traces, Kubernetes state,
+            commits, tickets, and runbooks.
+          </p>
+          <ol id="causal-chain" class="causal-chain"></ol>
+          <div id="remediation" class="remediation-card hidden"></div>
+        </section>
+
+        <section class="panel timeline-panel" aria-labelledby="timeline-title">
+          <div class="section-heading compact">
+            <div>
+              <p class="eyebrow">Correlated signals</p>
+              <h2 id="timeline-title">Incident timeline</h2>
+            </div>
+            <span id="timeline-count" class="quiet-badge">0 events</span>
+          </div>
+          <div id="timeline" class="timeline empty-state">No timeline yet.</div>
+        </section>
+
+        <section class="panel graph-panel" aria-labelledby="graph-title">
+          <div class="section-heading compact">
+            <div>
+              <p class="eyebrow">Cause and dependency map</p>
+              <h2 id="graph-title">Evidence graph</h2>
+            </div>
+            <span class="quiet-badge">Every claim is traceable</span>
+          </div>
+          <div id="evidence-graph" class="evidence-graph empty-state">
+            The service graph will appear after investigation.
+          </div>
+        </section>
+
+        <section class="panel evidence-panel" aria-labelledby="evidence-title">
+          <div class="section-heading compact">
+            <div>
+              <p class="eyebrow">Source material</p>
+              <h2 id="evidence-title">Evidence ledger</h2>
+            </div>
+            <span id="evidence-count" class="quiet-badge">0 signals</span>
+          </div>
+          <div id="evidence-list" class="evidence-list empty-state">No evidence collected.</div>
+        </section>
+
+        <section class="panel cost-panel" aria-labelledby="cost-title">
+          <div class="section-heading compact">
+            <div>
+              <p class="eyebrow">Reason once, execute many</p>
+              <h2 id="cost-title">Runtime comparison</h2>
+            </div>
+          </div>
+          <p id="cost-basis" class="panel-note">
+            Estimates appear after a compiled workflow run.
+          </p>
+          <div class="comparison">
+            <div>
+              <div class="comparison-label"><span>Agent loop</span><strong id="agent-tokens">—</strong></div>
+              <div class="bar-track"><span id="agent-bar" class="bar agent"></span></div>
+              <small id="agent-detail">LLM involved in every tool call</small>
+            </div>
+            <div>
+              <div class="comparison-label"><span>Compiled run</span><strong id="compiled-tokens">—</strong></div>
+              <div class="bar-track"><span id="compiled-bar" class="bar compiled"></span></div>
+              <small id="compiled-detail">No LLM required during execution</small>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <aside id="approval-panel" class="approval-panel" aria-labelledby="approval-title" hidden>
+      <div>
+        <p class="eyebrow">Human-in-the-loop control</p>
+        <h2 id="approval-title">Rollback requires approval</h2>
+        <p id="approval-description"></p>
+      </div>
+      <div class="approval-actions">
+        <label for="approver">Approver</label>
+        <input id="approver" value="Dhruvi Turakhia" maxlength="80" />
+        <button id="approve-button" class="danger-button" type="button">Approve & execute rollback</button>
+      </div>
+    </aside>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  </body>
+</html>
