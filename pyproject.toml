@@ -1,0 +1,60 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "incident-commander-ai"
+version = "0.1.0"
+description = "Deterministic AI SRE incident investigation with compiled MCP workflows."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "Dhruvi Turakhia" }]
+keywords = ["sre", "mcp", "incident-response", "fastapi", "temporal", "slack"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+  "fastapi>=0.115,<1.0",
+  "httpx>=0.27,<1.0",
+  "pydantic>=2.9,<3.0",
+  "pydantic-settings>=2.5,<3.0",
+  "uvicorn[standard]>=0.30,<1.0",
+]
+
+[project.optional-dependencies]
+ai = ["openai>=1.68,<3.0"]
+mcp = ["mcp>=1.12,<2.0"]
+slack = ["slack-bolt>=1.21,<2.0"]
+temporal = ["temporalio>=1.24,<2.0"]
+integrations = [
+  "incident-commander-ai[ai,mcp,slack,temporal]",
+]
+dev = [
+  "pytest>=8.3,<9.0",
+  "pytest-asyncio>=0.24,<1.0",
+  "pytest-cov>=6.0,<8.0",
+  "ruff>=0.9,<1.0",
+]
+
+[project.scripts]
+incident-commander = "incident_commander.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/incident_commander"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
