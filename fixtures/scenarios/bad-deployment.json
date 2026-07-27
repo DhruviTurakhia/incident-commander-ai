@@ -1,0 +1,106 @@
+{
+  "id": "bad-deployment",
+  "title": "Checkout latency after release 2.14.0",
+  "description": "A deployment changed database pool settings and triggered retry amplification across checkout and payments.",
+  "fault_type": "Bad deployment",
+  "services": ["checkout-api", "payment-service", "orders-db"],
+  "alert": {
+    "service": "checkout-api",
+    "severity": "SEV-1",
+    "detected_at": "2026-07-25T10:04:00Z"
+  },
+  "tool_outputs": {
+    "deployment.latest": {
+      "duration_ms": 34,
+      "data": {"version": "2.14.0", "previous_version": "2.13.6", "deployed_at": "2026-07-25T09:58:00Z", "author": "release-bot"},
+      "evidence": [
+        {"id": "ev-deploy", "source": "Argo CD", "signal_type": "deployment", "service": "checkout-api", "observed_at": "2026-07-25T09:58:00Z", "summary": "Version 2.14.0 reached 100% of checkout pods", "value": "2.14.0", "anomaly_score": 0.86, "tags": {"revision": "84", "environment": "production"}}
+      ]
+    },
+    "metrics.query": {
+      "duration_ms": 47,
+      "data": {"p95_latency_ms": 3820, "baseline_ms": 210, "db_pool_utilization": 1.0, "error_rate": 0.184},
+      "evidence": [
+        {"id": "ev-latency", "source": "Prometheus", "signal_type": "metric", "service": "checkout-api", "observed_at": "2026-07-25T10:02:00Z", "summary": "p95 latency increased 18x within four minutes of deployment", "value": "3820 ms", "anomaly_score": 0.99, "tags": {"metric": "http_server_duration_p95"}},
+        {"id": "ev-pool", "source": "Prometheus", "signal_type": "metric", "service": "orders-db", "observed_at": "2026-07-25T10:01:30Z", "summary": "Database connection pool reached full utilization", "value": "40/40 connections", "anomaly_score": 0.98, "tags": {"metric": "db_pool_active"}}
+      ]
+    },
+    "logs.search": {
+      "duration_ms": 55,
+      "data": {"matches": 1842, "top_error": "Timeout acquiring connection from pool"},
+      "evidence": [
+        {"id": "ev-logs", "source": "Loki", "signal_type": "log", "service": "checkout-api", "observed_at": "2026-07-25T10:01:42Z", "summary": "Connection acquisition timeouts began after the rollout", "value": "Timeout acquiring connection from pool", "anomaly_score": 0.96, "tags": {"level": "ERROR"}}
+      ]
+    },
+    "traces.search": {
+      "duration_ms": 63,
+      "data": {"slow_traces": 714, "critical_span": "orders-db.acquire_connection", "retry_fanout": 3.4},
+      "evidence": [
+        {"id": "ev-trace", "source": "OpenTelemetry", "signal_type": "trace", "service": "payment-service", "observed_at": "2026-07-25T10:02:14Z", "summary": "Payment calls retried checkout requests after database timeouts", "value": "3.4 retries/request", "anomaly_score": 0.93, "tags": {"span": "checkout.reserve"}}
+      ]
+    },
+    "kubernetes.snapshot": {
+      "duration_ms": 38,
+      "data": {"ready_pods": "12/12", "restarts": 0, "cpu_percent": 42, "memory_percent": 58},
+      "evidence": [
+        {"id": "ev-k8s", "source": "Kubernetes", "signal_type": "state", "service": "checkout-api", "observed_at": "2026-07-25T10:03:00Z", "summary": "Pods remained healthy, ruling out resource pressure and crash loops", "value": "12/12 ready", "anomaly_score": 0.12, "tags": {"namespace": "commerce"}}
+      ]
+    },
+    "github.recent_commits": {
+      "duration_ms": 44,
+      "data": {"commit": "7c1e9aa", "pull_request": 1842, "files_changed": ["config/database.ts", "src/retry.ts"]},
+      "evidence": [
+        {"id": "ev-commit", "source": "GitHub", "signal_type": "commit", "service": "checkout-api", "observed_at": "2026-07-25T09:41:00Z", "summary": "Release reduced pool size from 120 to 40 while enabling three retries", "value": "DB_POOL_MAX=40, MAX_RETRIES=3", "anomaly_score": 0.97, "url": "https://github.com/example/checkout/pull/1842", "tags": {"commit": "7c1e9aa"}}
+      ]
+    },
+    "jira.open_tickets": {
+      "duration_ms": 28,
+      "data": {"related": ["OPS-431"], "change_ticket": "CHG-9021"},
+      "evidence": []
+    },
+    "runbooks.search": {
+      "duration_ms": 21,
+      "data": {"runbook": "checkout-database-saturation", "recommended_step": "Roll back if pool saturation follows a release and pods remain healthy"},
+      "evidence": []
+    }
+  },
+  "analysis": {
+    "timeline": [
+      {"occurred_at": "2026-07-25T09:58:00Z", "title": "Release 2.14.0 deployed", "detail": "The release changed database pool and retry settings.", "service": "checkout-api", "evidence_ids": ["ev-deploy", "ev-commit"], "severity": "info"},
+      {"occurred_at": "2026-07-25T10:01:30Z", "title": "Connection pool saturated", "detail": "All 40 database connections became active.", "service": "orders-db", "evidence_ids": ["ev-pool", "ev-logs"], "severity": "critical"},
+      {"occurred_at": "2026-07-25T10:02:14Z", "title": "Retries amplified latency", "detail": "Payment retries multiplied waiting checkout requests.", "service": "payment-service", "evidence_ids": ["ev-trace", "ev-latency"], "severity": "critical"}
+    ],
+    "root_cause": {
+      "summary": "Release 2.14.0 reduced the checkout database pool from 120 to 40 connections while enabling three retries. The pool saturated, and retry amplification pushed p95 latency to 3.8 seconds.",
+      "confidence": 0.96,
+      "service": "checkout-api",
+      "causal_chain": ["Configuration changed in release 2.14.0", "Database pool reached 100% utilization", "Connection requests timed out", "Payment retries amplified queueing", "Checkout p95 latency increased 18x"],
+      "evidence_ids": ["ev-deploy", "ev-commit", "ev-pool", "ev-logs", "ev-trace", "ev-latency"]
+    },
+    "evidence_graph": {
+      "nodes": [
+        {"id": "release", "label": "v2.14.0", "type": "change", "status": "cause"},
+        {"id": "checkout", "label": "checkout-api", "type": "service", "status": "affected"},
+        {"id": "database", "label": "orders-db", "type": "service", "status": "saturated"},
+        {"id": "payments", "label": "payment-service", "type": "service", "status": "retrying"},
+        {"id": "alert", "label": "p95 3.8s", "type": "signal", "status": "critical"}
+      ],
+      "edges": [
+        {"from": "release", "to": "checkout", "label": "changed pool config"},
+        {"from": "checkout", "to": "database", "label": "exhausted connections"},
+        {"from": "database", "to": "payments", "label": "triggered retries"},
+        {"from": "payments", "to": "alert", "label": "amplified latency"}
+      ]
+    },
+    "remediation": {
+      "title": "Roll back checkout-api to 2.13.6",
+      "description": "Restore the previous pool and retry settings, then watch pool utilization and p95 latency for ten minutes.",
+      "command_preview": "kubectl rollout undo deployment/checkout-api --to-revision=83 -n commerce",
+      "risk": "destructive",
+      "requires_approval": true
+    },
+    "compiled_latency_seconds": 0.42,
+    "action_result": {"status": "rolled_back", "from_version": "2.14.0", "to_version": "2.13.6", "verification": "rollout healthy; p95 recovering"}
+  }
+}
+
