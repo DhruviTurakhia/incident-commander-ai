@@ -1,0 +1,78 @@
+{
+  "id": "queue-backlog",
+  "title": "Order events delayed by a consumer backlog",
+  "description": "A schema mismatch sent events into a retry loop and starved normal order processing.",
+  "fault_type": "Message-queue backlog",
+  "services": ["order-consumer", "order-events", "notification-worker"],
+  "alert": {"service": "order-consumer", "severity": "SEV-2", "detected_at": "2026-07-25T14:41:00Z"},
+  "tool_outputs": {
+    "deployment.latest": {
+      "data": {"version": "4.6.0", "previous_version": "4.5.3", "deployed_at": "2026-07-25T14:25:00Z"},
+      "evidence": [{"id": "qb-deploy", "source": "Argo CD", "signal_type": "deployment", "service": "order-consumer", "observed_at": "2026-07-25T14:25:00Z", "summary": "Version 4.6.0 changed OrderPlaced deserialization", "value": "4.6.0", "anomaly_score": 0.88}]
+    },
+    "metrics.query": {
+      "data": {"queue_depth": 186400, "oldest_message_seconds": 912, "retry_rate": 0.76},
+      "evidence": [
+        {"id": "qb-depth", "source": "Prometheus", "signal_type": "metric", "service": "order-events", "observed_at": "2026-07-25T14:38:00Z", "summary": "Queue depth grew from 900 to 186k messages", "value": "186400", "anomaly_score": 1.0},
+        {"id": "qb-retry", "source": "Prometheus", "signal_type": "metric", "service": "order-consumer", "observed_at": "2026-07-25T14:37:00Z", "summary": "Seventy-six percent of deliveries were retries", "value": "76%", "anomaly_score": 0.98}
+      ]
+    },
+    "logs.search": {
+      "data": {"matches": 142040, "top_error": "missing required field customer.locale"},
+      "evidence": [{"id": "qb-log", "source": "Loki", "signal_type": "log", "service": "order-consumer", "observed_at": "2026-07-25T14:29:13Z", "summary": "New consumers rejected older events without customer.locale", "value": "SchemaValidationError", "anomaly_score": 0.99}]
+    },
+    "traces.search": {
+      "data": {"retry_cycles": 9, "critical_span": "order.deserialize"},
+      "evidence": [{"id": "qb-trace", "source": "OpenTelemetry", "signal_type": "trace", "service": "order-consumer", "observed_at": "2026-07-25T14:31:00Z", "summary": "Messages repeatedly failed deserialization before business logic", "value": "9 retry cycles", "anomaly_score": 0.96}]
+    },
+    "kubernetes.snapshot": {
+      "data": {"ready_pods": "20/20", "cpu_percent": 88, "restarts": 0},
+      "evidence": [{"id": "qb-k8s", "source": "Kubernetes", "signal_type": "state", "service": "order-consumer", "observed_at": "2026-07-25T14:39:00Z", "summary": "Consumers were healthy but busy retrying poison messages", "value": "20/20 ready; 88% CPU", "anomaly_score": 0.72}]
+    },
+    "github.recent_commits": {
+      "data": {"commit": "ca841d0", "pull_request": 1402, "files_changed": ["events/order_placed.py"]},
+      "evidence": [{"id": "qb-commit", "source": "GitHub", "signal_type": "commit", "service": "order-consumer", "observed_at": "2026-07-25T13:58:00Z", "summary": "Deserializer made customer.locale required without a backward-compatible default", "value": "locale: str", "anomaly_score": 0.97, "url": "https://github.com/example/orders/pull/1402"}]
+    },
+    "jira.open_tickets": {"data": {"related": ["ORD-1402"], "note": "Producer rollout planned for next week"}, "evidence": []},
+    "runbooks.search": {"data": {"runbook": "consumer-poison-message", "recommended_step": "Roll back the consumer, isolate poison messages, and replay after validation"}, "evidence": []}
+  },
+  "analysis": {
+    "timeline": [
+      {"occurred_at": "2026-07-25T14:25:00Z", "title": "Consumer 4.6.0 deployed", "detail": "The deserializer began requiring customer.locale.", "service": "order-consumer", "evidence_ids": ["qb-deploy", "qb-commit"], "severity": "info"},
+      {"occurred_at": "2026-07-25T14:29:13Z", "title": "Older events entered retry loop", "detail": "Existing messages failed schema validation.", "service": "order-consumer", "evidence_ids": ["qb-log", "qb-trace"], "severity": "critical"},
+      {"occurred_at": "2026-07-25T14:38:00Z", "title": "Queue delay breached SLO", "detail": "The backlog passed 186k and the oldest message reached 15 minutes.", "service": "order-events", "evidence_ids": ["qb-depth", "qb-retry", "qb-k8s"], "severity": "critical"}
+    ],
+    "root_cause": {
+      "summary": "Order consumer 4.6.0 made customer.locale mandatory before all producers supplied it. Older events failed deserialization and retried repeatedly, starving normal consumption and creating a 186k-message backlog.",
+      "confidence": 0.98,
+      "service": "order-consumer",
+      "causal_chain": ["Breaking schema change deployed", "Older events lacked customer.locale", "Deserializer rejected messages", "Poison messages entered retry loop", "Normal events accumulated behind retries"],
+      "evidence_ids": ["qb-deploy", "qb-commit", "qb-log", "qb-trace", "qb-retry", "qb-depth"]
+    },
+    "evidence_graph": {
+      "nodes": [
+        {"id": "release", "label": "consumer 4.6.0", "type": "change", "status": "cause"},
+        {"id": "schema", "label": "schema mismatch", "type": "signal", "status": "cause"},
+        {"id": "consumer", "label": "order-consumer", "type": "service", "status": "retrying"},
+        {"id": "broker", "label": "order-events", "type": "service", "status": "backlogged"},
+        {"id": "delay", "label": "15m delay", "type": "signal", "status": "critical"}
+      ],
+      "edges": [
+        {"from": "release", "to": "schema", "label": "required new field"},
+        {"from": "schema", "to": "consumer", "label": "failed parsing"},
+        {"from": "consumer", "to": "broker", "label": "retried messages"},
+        {"from": "broker", "to": "delay", "label": "increased age"}
+      ]
+    },
+    "remediation": {
+      "title": "Roll back order-consumer to 4.5.3",
+      "description": "Restore backward-compatible deserialization, quarantine invalid events, and replay the backlog in controlled batches.",
+      "command_preview": "kubectl rollout undo deployment/order-consumer --to-revision=206 -n orders",
+      "risk": "destructive",
+      "requires_approval": true
+    },
+    "compiled_latency_seconds": 0.41,
+    "action_result": {"status": "rolled_back", "from_version": "4.6.0", "to_version": "4.5.3", "verification": "retry rate below 2%; queue depth decreasing"}
+  }
+}
+
